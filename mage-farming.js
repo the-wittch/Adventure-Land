@@ -10,12 +10,17 @@ var BUY_TO          = 50;
 var GOO_GOLD_GOAL  = 100;    // once we have this much gold, try town again
 var ROAM_MAX_ATT   = 150;    // when roaming, ignore species with attack above this
 var ROAM_DELAY     = 8;      // seconds with no target before relocating
+var ROAM_COOLDOWN  = 30;     // seconds between failed roam attempts (prevents spam)
 
 var returnPos = null;
 var lowGold  = false;        // broke -> farm goo until we can afford pots
 var shopping = false;        // currently on a potion-buying trip
 var lastTarget = Date.now();
+var lastRoam  = 0;           // timestamp of last roam attempt (cooldown)
+var failedMaps = {};         // maps smart_move rejected; retried once stale (10 min)
 var lastState = "";
+
+function mark_failed_map(m) { if (m) failedMaps[m] = Date.now(); }
 
 // ---- Chat-log helper: only prints when the message changes ----
 function note(msg, color) {
@@ -36,7 +41,8 @@ function mpot_count() { return qty(["mpot0", "mpot1", "mpot2"]); }
 
 // ---- Monster helpers (monsters are in parent.entities) ----
 function is_monster(e) {
-    return e && e.type == "monster" && e.visible && !e.dead && e.hp > 0;
+    return e && e.type == "monster" && e.visible && !e.dead && e.hp > 0
+        && (!e.map || e.map == character.map);
 }
 
 function is_junk(m) {
@@ -120,7 +126,8 @@ function find_spawn(type) {
     var best = null, bestScore = -1;
     for (var map in G.maps) {
         var gmap = G.maps[map];
-        if (gmap.ignore || gmap.instance || gmap.pvp) continue;
+        if (gmap.ignore || gmap.instance || gmap.pvp || gmap.event) continue;
+        if (failedMaps[map] && Date.now() - failedMaps[map] < 10 * 60 * 1000) continue;
         var packs = gmap.monsters || [];
         for (var i = 0; i < packs.length; i++) {
             var p = packs[i];
@@ -136,23 +143,26 @@ function find_spawn(type) {
 
 function roam() {
     if (shopping || smart.moving) return;
+    if (Date.now() - lastRoam < ROAM_COOLDOWN * 1000) return; // silent, kills reject-spam
+    lastRoam = Date.now();
     var type = lowGold ? "goo" : best_roam_species();
     if (!type) { note("No roam target found", "#FF5555"); return; }
     var spot = find_spawn(type);
     if (!spot) { note("No spawn for " + type, "#FF5555"); return; }
-    returnPos = { map: spot.map, x: spot.x, y: spot.y };
-    note("Roaming to " + type + " on " + spot.map, "#AA66FF");
-    if (spot.map == character.map) {
-        smart_move({ x: spot.x, y: spot.y }).catch(function (e) {
-            game_log("Roam failed: " + (e && e.reason ? e.reason : e), "#FF3333");
-        });
-    } else {
-        smart_move({ to: spot.map }).then(function () {
-            return smart_move({ x: spot.x, y: spot.y });
-        }).catch(function (e) {
-            game_log("Roam failed: " + (e && e.reason ? e.reason : e), "#FF3333");
-        });
-    }
+    if (!G.maps[spot.map]) { note("Skipping unknown map " + spot.map, "#FF5555"); return; }
+    delete failedMaps[spot.map];
+    note("Roaming to " + type + " on " + spot.map
+         + " [" + Math.round(spot.x) + "," + Math.round(spot.y) + "]", "#AA66FF");
+    var settle = function () { returnPos = { map: spot.map, x: spot.x, y: spot.y }; };
+    var walk = spot.map == character.map
+        ? smart_move({ map: character.map, x: spot.x, y: spot.y })
+        : smart_move({ to: spot.map }).then(function () {
+              return smart_move({ map: character.map, x: spot.x, y: spot.y });
+          });
+    walk.then(settle).catch(function (e) {
+        mark_failed_map(spot.map);
+        game_log("Roam failed: " + (e && e.reason ? e.reason : e), "#FF3333");
+    });
 }
 
 // ---- Return to the saved farming spot ----
@@ -177,7 +187,7 @@ function go_back() {
 function go_shopping() {
     if (shopping) return;
     shopping = true;
-    if (!returnPos) {
+    if (!returnPos && character.map) {
         returnPos = { map: character.map, x: character.x, y: character.y };
     }
     note("Pots low, going to town", "#FF8800");
@@ -250,15 +260,12 @@ function engage(target) {
     }
 
     note("Approaching " + target.mtype + " d=" + Math.round(dist), "#00AAFF");
-    if (dist > 400) {
-        if (typeof smart == "undefined" || !smart.moving) {
-            smart_move({ x: target.x, y: target.y }).catch(function () {});
-        }
+    var px = character.real_x + (target.x - character.real_x) * 0.4;
+    var py = character.real_y + (target.y - character.real_y) * 0.4;
+    if (dist > 400 && character.map && (typeof smart == "undefined" || !smart.moving)) {
+        smart_move({ map: character.map, x: target.x, y: target.y }).catch(function () {});
     } else {
-        xmove(
-            character.real_x + (target.x - character.real_x) * 0.4,
-            character.real_y + (target.y - character.real_y) * 0.4
-        ).catch(function () {});
+        xmove(px, py).catch(function () {});
     }
 }
 
