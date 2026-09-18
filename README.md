@@ -6,7 +6,7 @@ Automation scripts for [Adventure Land](https://adventure.land), the MMORPG wher
 
 | File | Character | Description |
 |------|-----------|-------------|
-| [`kite_mage.js`](kite_mage.js) | Mage | Auto-farms with dynamic target picking, kiting, and automatic potion restocking. |
+| [`kite_mage.js`](https://github.com/the-wittch/Adventure-Land/blob/main/mage-farming.js) | Mage | Auto-farms with dynamic target picking, kiting, and automatic potion restocking. |
 
 ## Features
 
