@@ -62,6 +62,7 @@ All tunables are declared at the top of `mage-farming.js`:
 | `GOO_GOLD_GOAL` | `100` | Once this much gold is earned in broke-mode, try shopping again. |
 | `ROAM_MAX_ATT` | `150` | When roaming, ignore monster species whose attack is above this (survivability). |
  | `ROAM_OTHER_RATIO` | `2.5` | Minimum efficiency multiplier before the bot leaves the current map for a foreign species (prevents map-ping-pong and reduces travel exposure). |
+ | `ROAM_MAX_RESPAWN` | `600` | Ignore species that respawn slower than this (seconds) - stops it trekking to spawn-once/very-rare bosses like Jr. in Spooky Town (7.2h respawn). |
  | `ROAM_DELAY` | `8` | Seconds with no valid target before relocating to a new spawn/map. |
  | `ROAM_COOLDOWN` | `30` | Seconds between roam attempts after a failure (prevents log spam / retry loops). |
  | `ACTION_INTERVAL` | `110` | Min ms between dispatched game actions (attack/move/skill). Keeps total under the server's ~10 actions/s kick limit. |

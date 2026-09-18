@@ -17,6 +17,7 @@ var BUY_TO          = 300;
 var GOO_GOLD_GOAL  = 10000;    // once we have this much gold, try town again
 var ROAM_MAX_ATT   = 150;  // when roaming, ignore species with attack above this
 var ROAM_OTHER_RATIO = 2.5;// leave the current map only if another species scores 2.5x better
+var ROAM_MAX_RESPAWN = 600; // ignore species that take longer than this (s) to respawn - jr (7.2h!) and spawn-once bosses aren't farmable
 var ROAM_DELAY     = 8;      // seconds with no target before relocating
 var ROAM_COOLDOWN  = 30;     // seconds between failed roam attempts (prevents spam)
 var ACTION_INTERVAL = 110;   // ms between dispatched game actions (~9/s, under server cap)
@@ -162,6 +163,8 @@ function best_roam_species() {
         if (hp <= 0 || hp > MAX_MONSTER_HP) continue; // bosses
         if (atk > ROAM_MAX_ATT) continue;             // too dangerous
         if (is_lethal(type, ROAM_RISK_FRAC)) continue; // deadly for current level
+        var rr = Number(md.respawn);
+        if (!isNaN(rr) && (rr <= 0 || rr > ROAM_MAX_RESPAWN)) continue; // only respawns every 7.2h / once - not farmable
         var score = xp / (atk + hp / 100);
         if (spawn_on_map(type, character.map)) {
             if (!bestLocal || score > bestLocal.score) bestLocal = { type: type, score: score };
