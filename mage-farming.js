@@ -229,7 +229,6 @@ function engage(target) {
     var tooClose = Math.min(target.range + 25, character.range * 0.5);
 
     if (dist < tooClose) {
-        note("Kiting " + target.mtype + " d=" + Math.round(dist), "#FFAA00");
         var dx = character.real_x - target.x;
         var dy = character.real_y - target.y;
         var len = Math.sqrt(dx * dx + dy * dy);
@@ -239,11 +238,23 @@ function engage(target) {
             len = 1;
         }
         var step = Math.max(character.range * 0.5, 40);
-        move(
-            character.real_x + (dx / len) * step,
-            character.real_y + (dy / len) * step
-        ).catch(function () {});
-        return;
+        var base = Math.atan2(dy, dx);
+        var moved = false;
+        // fan the retreat angle out a full circle so we never back straight into
+        // water/walls; first walkable direction closest to straight-back wins
+        for (var i = 0; i < 16; i++) {
+            var ang = base + (i % 2 ? -1 : 1) * Math.ceil((i + 1) / 2) * (Math.PI / 12);
+            var rx = character.real_x + Math.cos(ang) * step;
+            var ry = character.real_y + Math.sin(ang) * step;
+            if (can_move_to(rx, ry)) {
+                note("Kiting " + target.mtype + " d=" + Math.round(dist), "#FFAA00");
+                move(rx, ry).catch(function () {});
+                moved = true;
+                break;
+            }
+        }
+        if (moved) return;
+        note("Boxed in, fighting in place", "#FFAA00"); // fall through to attack
     }
 
     if (is_in_range(target)) {
