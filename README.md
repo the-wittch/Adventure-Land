@@ -7,14 +7,14 @@ Automation scripts for [Adventure Land](https://adventure.land), the MMORPG wher
 | File | Character | Description |
 |------|-----------|-------------|
 | [`Mage Farming`](https://github.com/the-wittch/Adventure-Land/blob/main/mage-farming.js) | Mage | Auto-farms with dynamic target picking, kiting, and automatic potion restocking. |
- 
+
 ## Features
 
 `mage_farming.js`:
 
 > [!NOTE]
 > This script is currently for a solo mage character, no merchant, party setup at the moment
- 
+
 - **Dynamic target selection** - scores every visible monster by XP earned per point of effort (`xp / (attack + defense + hp/100)`) and weights closer monsters higher, so the character always fights the most efficient safe target.
 - **Junk filter** - skips training dummies (`mtype == "dummy"`) and any monster whose `max_hp` is above `MAX_MONSTER_HP`, keeping the bot away from bosses and tanky mobs.
 - **Kiting** - stays at range, backpedals with a normalized away-vector when a monster closes in, and never retreats past the character's own attack range.
