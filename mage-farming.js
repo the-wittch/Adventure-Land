@@ -8,9 +8,13 @@ var BUY_AT_HPOT    = 5;
 var BUY_AT_MPOT    = 5;
 var BUY_TO          = 50;
 var GOO_GOLD_GOAL  = 100;    // once we have this much gold, try town again
+var ROAM_MAX_ATT   = 150;    // when roaming, ignore species with attack above this
+var ROAM_DELAY     = 8;      // seconds with no target before relocating
 
 var returnPos = null;
 var lowGold  = false;        // broke -> farm goo until we can afford pots
+var shopping = false;        // currently on a potion-buying trip
+var lastTarget = Date.now();
 var lastState = "";
 
 // ---- Chat-log helper: only prints when the message changes ----
@@ -32,7 +36,7 @@ function mpot_count() { return qty(["mpot0", "mpot1", "mpot2"]); }
 
 // ---- Monster helpers (monsters are in parent.entities) ----
 function is_monster(e) {
-    return e && e.type == "monster" && !e.dead && e.hp > 0;
+    return e && e.type == "monster" && e.visible && !e.dead && e.hp > 0;
 }
 
 function is_junk(m) {
@@ -47,7 +51,7 @@ function best_score_target() {
     for (var id in parent.entities) {
         var m = parent.entities[id];
         if (!is_monster(m) || is_junk(m)) continue;
-        var d = distance(character, m);
+        var d = parent.distance(character, m);
         if (d > ENGAGE_RANGE) continue;
         if (d < nearestD) { nearestD = d; nearest = m; }
 
@@ -67,12 +71,88 @@ function pick_target() {
         for (var id in parent.entities) {
             var m = parent.entities[id];
             if (!is_monster(m) || m.mtype != "goo") continue;
-            var d = distance(character, m);
+            var d = parent.distance(character, m);
             if (d < bestD) { bestD = d; best = m; }
         }
         return best;
     }
     return best_score_target();
+}
+
+// ---- Cross-map roaming: score species globally, travel to the best spawn ----
+function spawn_on_map(type, map) {
+    var packs = (G.maps[map] && G.maps[map].monsters) || [];
+    for (var i = 0; i < packs.length; i++) if (packs[i].type == type) return true;
+    return false;
+}
+
+function available_species() {
+    var set = {};
+    for (var map in G.maps) {
+        var gmap = G.maps[map];
+        if (gmap.ignore || gmap.instance || gmap.pvp) continue;
+        var packs = gmap.monsters || [];
+        for (var i = 0; i < packs.length; i++) set[packs[i].type] = true;
+    }
+    return set;
+}
+
+function best_roam_species() {
+    var avail = available_species();
+    var best = null, bestScore = 0;
+    for (var type in avail) {
+        if (type == "dummy") continue;
+        var md = G.monsters[type];
+        if (!md) continue;
+        var hp  = Number(md.hp) || 0;
+        var atk = Number(md.attack) || 0;
+        var xp  = Number(md.xp) || 0;
+        if (hp <= 0 || hp > MAX_MONSTER_HP) continue; // bosses
+        if (atk > ROAM_MAX_ATT) continue;             // too dangerous
+        var score = xp / (atk + hp / 100);
+        if (spawn_on_map(type, character.map)) score *= 1.3; // prefer staying
+        if (score > bestScore) { bestScore = score; best = type; }
+    }
+    return best;
+}
+
+function find_spawn(type) {
+    var best = null, bestScore = -1;
+    for (var map in G.maps) {
+        var gmap = G.maps[map];
+        if (gmap.ignore || gmap.instance || gmap.pvp) continue;
+        var packs = gmap.monsters || [];
+        for (var i = 0; i < packs.length; i++) {
+            var p = packs[i];
+            if (p.type != type || !p.boundary) continue;
+            var x = (p.boundary[0] + p.boundary[2]) / 2;
+            var y = (p.boundary[1] + p.boundary[3]) / 2;
+            var score = (Number(p.count) || 1) + (map == character.map ? 100 : 0);
+            if (score > bestScore) { bestScore = score; best = { map: map, x: x, y: y }; }
+        }
+    }
+    return best;
+}
+
+function roam() {
+    if (shopping || smart.moving) return;
+    var type = lowGold ? "goo" : best_roam_species();
+    if (!type) { note("No roam target found", "#FF5555"); return; }
+    var spot = find_spawn(type);
+    if (!spot) { note("No spawn for " + type, "#FF5555"); return; }
+    returnPos = { map: spot.map, x: spot.x, y: spot.y };
+    note("Roaming to " + type + " on " + spot.map, "#AA66FF");
+    if (spot.map == character.map) {
+        smart_move({ x: spot.x, y: spot.y }).catch(function (e) {
+            game_log("Roam failed: " + (e && e.reason ? e.reason : e), "#FF3333");
+        });
+    } else {
+        smart_move({ to: spot.map }).then(function () {
+            return smart_move({ x: spot.x, y: spot.y });
+        }).catch(function (e) {
+            game_log("Roam failed: " + (e && e.reason ? e.reason : e), "#FF3333");
+        });
+    }
 }
 
 // ---- Return to the saved farming spot ----
@@ -81,28 +161,61 @@ function go_back() {
     var p = returnPos;
     returnPos = null;
     if (p.map == character.map) {
-        smart_move({ x: p.x, y: p.y });
+        smart_move({ x: p.x, y: p.y }).catch(function (e) {
+            game_log("Return failed: " + (e && e.reason ? e.reason : e), "#FF3333");
+        });
     } else {
-        smart_move({ to: p.map }, function () {
-            smart_move({ x: p.x, y: p.y });
+        smart_move({ to: p.map }).then(function () {
+            return smart_move({ x: p.x, y: p.y });
+        }).catch(function (e) {
+            game_log("Return failed: " + (e && e.reason ? e.reason : e), "#FF3333");
         });
     }
+}
+
+// ---- Walk to the potion vendor, buy with available gold, then return ----
+function go_shopping() {
+    if (shopping) return;
+    shopping = true;
+    if (!returnPos) {
+        returnPos = { map: character.map, x: character.x, y: character.y };
+    }
+    note("Pots low, going to town", "#FF8800");
+    smart_move({ to: "potions" }).then(function () {
+        var wantH = Math.max(0, BUY_TO - hpot_count());
+        var wantM = Math.max(0, BUY_TO - mpot_count());
+        return Promise.all([
+            wantH ? buy_with_gold("hpot0", wantH) : null,
+            wantM ? buy_with_gold("mpot0", wantM) : null
+        ]);
+    }).then(function () {
+        game_log("Restocked: hpot=" + hpot_count() + " mpot=" + mpot_count()
+                 + " gold=" + character.gold, "#00FF00");
+        lowGold = (hpot_count() <= BUY_AT_HPOT || mpot_count() <= BUY_AT_MPOT);
+        if (lowGold) game_log("Broke! Farming goo for gold", "#FF8800");
+        shopping = false;
+        go_back();
+    }).catch(function (e) {
+        game_log("Shop trip failed: " + (e && e.reason ? e.reason : e), "#FF3333");
+        shopping = false;
+        go_back();
+    });
 }
 
 // ---- Mage burst, if the skill is available ----
 function mage_burst(target) {
     try {
-        if (can_use("burst")
+        if ((typeof can_use != "function" || can_use("burst"))
             && character.mp > (G.skills.burst.mp + character.max_mp * 0.3)
             && is_in_range(target, "burst")
             && !is_on_cooldown("burst")) {
-            use_skill("burst");
+            use_skill("burst").catch(function () {});
         }
     } catch (e) { /* skill not unlocked yet */ }
 }
 
 function engage(target) {
-    var dist = distance(character, target);
+    var dist = parent.distance(character, target);
     var tooClose = Math.min(target.range + 25, character.range * 0.5);
 
     if (dist < tooClose) {
@@ -119,14 +232,18 @@ function engage(target) {
         move(
             character.real_x + (dx / len) * step,
             character.real_y + (dy / len) * step
-        );
+        ).catch(function () {});
         return;
     }
 
     if (is_in_range(target)) {
         if (can_attack(target)) {
             note("Attacking " + target.mtype + " d=" + Math.round(dist), "#00FF00");
-            attack(target);
+            attack(target).then(function () {
+                reduce_cooldown("attack", character.ping * 0.95);
+            }).catch(function (e) {
+                note("Attack failed: " + (e && e.reason ? e.reason : e), "#FF5555");
+            });
         }
         mage_burst(target);
         return;
@@ -134,12 +251,14 @@ function engage(target) {
 
     note("Approaching " + target.mtype + " d=" + Math.round(dist), "#00AAFF");
     if (dist > 400) {
-        if (typeof smart == "undefined" || !smart.moving) smart_move({ x: target.x, y: target.y });
+        if (typeof smart == "undefined" || !smart.moving) {
+            smart_move({ x: target.x, y: target.y }).catch(function () {});
+        }
     } else {
-        move(
+        xmove(
             character.real_x + (target.x - character.real_x) * 0.4,
             character.real_y + (target.y - character.real_y) * 0.4
-        );
+        ).catch(function () {});
     }
 }
 
@@ -149,6 +268,7 @@ function tick() {
 
     if (character.rip) { note("Dead, respawning...", "#FF0000"); return; }
     if (is_moving(character) || (typeof smart != "undefined" && smart.moving)) return;
+    if (shopping) return;
 
     // ---- Restock (or goo farm when broke) ----
     if (hpot_count() <= BUY_AT_HPOT || mpot_count() <= BUY_AT_MPOT) {
@@ -159,21 +279,7 @@ function tick() {
         }
 
         if (!lowGold) {
-            if (is_in_town()) {
-                buy_with_gold("hpot0", BUY_TO - hpot_count());
-                buy_with_gold("mpot0", BUY_TO - mpot_count());
-                game_log("Restocked: hpot=" + hpot_count() + " mpot=" + mpot_count()
-                         + " gold=" + character.gold, "#00FF00");
-                if (hpot_count() < BUY_AT_HPOT && mpot_count() < BUY_AT_MPOT) {
-                    lowGold = true;
-                    note("Broke! Farming goo for gold", "#FF8800");
-                }
-                go_back();
-            } else if (!returnPos) {
-                returnPos = { map: character.map, x: character.x, y: character.y };
-                note("Pots low, heading to town", "#FF8800");
-                smart_move({ to: "main" });
-            }
+            go_shopping();
             return;
         }
         // lowGold: fall through and fight goo below
@@ -182,32 +288,31 @@ function tick() {
     if (!attack_mode) { note("attack_mode is OFF", "#FF5555"); return; }
 
     var target = get_targeted_monster();
-    if (!target || target.dead || target.hp <= 0 || is_junk(target)
-        || distance(character, target) > ENGAGE_RANGE) {
+    if (!target || !target.visible || target.dead || target.hp <= 0 || is_junk(target)
+        || parent.distance(character, target) > ENGAGE_RANGE) {
         target = pick_target();
         if (target) change_target(target);
     }
 
     if (!target) {
-        var info = [];
-        for (var id in parent.entities) {
-            var m = parent.entities[id];
-            if (m.type != "monster") continue;
-            info.push(m.mtype + " mhp=" + (m.max_hp) + " hp=" + (m.hp)
-                      + " xp=" + (m.xp) + " atk=" + (m.attack)
-                      + " d=" + Math.round(distance(character, m)));
-            if (info.length >= 5) break;
+        note("No targets nearby", "#FF5555");
+        if (Date.now() - lastTarget > ROAM_DELAY * 1000) {
+            roam();
+            lastTarget = Date.now();
         }
-        note("No targets. " + (info.join(" | ") || "none"), "#FF5555");
         return;
     }
 
-    var d = distance(character, target);
+    lastTarget = Date.now();
+    var d = parent.distance(character, target);
     note("Target " + target.mtype + " hp=" + Math.round(target.hp)
          + " xp=" + target.xp + " d=" + Math.round(d), "#00FFFF");
 
     engage(target);
 }
+
+// Keep the browser from throttling JS when the tab loses focus
+try { if (typeof performance_trick == "function") performance_trick(); } catch (e) {}
 
 setInterval(function () {
     try {
