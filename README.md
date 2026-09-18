@@ -2,6 +2,9 @@
 
 Automation scripts for [Adventure Land](https://adventure.land), the MMORPG where you write JavaScript to control your character.
 
+> [!NOTE]
+> This project is currently written for a single-character **mage** account with **no merchant** (no shop, single character running only this script). More scripts — for other characters, classes, and roles — are coming soon.
+
 ## Scripts
 
 | File | Character | Description |
