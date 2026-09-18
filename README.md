@@ -10,10 +10,7 @@ Automation scripts for [Adventure Land](https://adventure.land), the MMORPG wher
 
 ## Features
 
-`mage_farming.js`:
-
-> [!NOTE]
-> This script is currently for a solo mage character, no merchant, party setup at the moment
+`mage-farming.js`:
 
 - **Dynamic target selection** - scores every visible monster by XP earned per point of effort (`xp / (attack + defense + hp/100)`) and weights closer monsters higher, so the character always fights the most efficient safe target.
 - **Junk filter** - skips training dummies (`mtype == "dummy"`) and any monster whose `max_hp` is above `MAX_MONSTER_HP`, keeping the bot away from bosses and tanky mobs.
@@ -27,20 +24,20 @@ Automation scripts for [Adventure Land](https://adventure.land), the MMORPG wher
 ## Installation
 
 1. Open Adventure Land and open the code editor for your Mage.
-2. Create a new code file named `kite_mage`.
-3. Paste the contents of [`Mage Farming`](https://github.com/the-wittch/Adventure-Land/blob/main/mage-farming.js).
+2. Create a new code file named `mage-farming`.
+3. Paste the contents of [`mage-farming.js`](kite_mage.js).
 4. Make sure `attack_mode` is enabled (either the in-game toggle or the `attack_mode = true` variable at the top).
 5. Run the code.
 
 To use it as a module from another code file:
 
 ```js
-load_code("mage_farming");
+load_code("mage-farming");
 ```
 
 ## Configuration
 
-All tunables are declared at the top of `mage_farming.js`:
+All tunables are declared at the top of `mage-farming.js`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -52,7 +49,8 @@ All tunables are declared at the top of `mage_farming.js`:
 | `BUY_TO` | `50` | Restock up to this many of each potion. |
 | `GOO_GOLD_GOAL` | `100` | Once this much gold is earned in broke-mode, try shopping again. |
 | `ROAM_MAX_ATT` | `150` | When roaming, ignore monster species whose attack is above this (survivability). |
-| `ROAM_DELAY` | `8` | Seconds with no valid target before relocating to a new spawn/map. |
+ | `ROAM_DELAY` | `8` | Seconds with no valid target before relocating to a new spawn/map. |
+ | `ROAM_COOLDOWN` | `30` | Seconds between roam attempts after a failure (prevents log spam / retry loops). |
 
 ## How It Works
 
@@ -107,6 +105,19 @@ The script writes to the in-game log (`game_log`). Useful lines:
 | `attack_mode is OFF` | The in-game attack toggle is disabled. |
 
 If nothing is fought, lower `MAX_MONSTER_HP`/`ENGAGE_RANGE` mismatches are the usual cause - the `No targets.` line prints the filtered monsters' stats so you can adjust them.
+
+## Repository Layout
+
+```
+.
+├── kite_mage.js     # Mage farming script
+├── README.md
+├── CHANGELOG.md
+├── LICENSE
+└── .gitignore
+```
+
+New scripts for other characters (priest, ranger, merchant, ...) can be added as sibling `.js` files and documented in the table above.
 
 ## Disclaimer
 
