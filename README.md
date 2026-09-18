@@ -88,19 +88,6 @@ The script writes to the in-game log (`game_log`). Useful lines:
 
 If nothing is fought, lower `MAX_MONSTER_HP`/`ENGAGE_RANGE` mismatches are the usual cause - the `No targets.` line prints the filtered monsters' stats so you can adjust them.
 
-## Repository Layout
-
-```
-.
-├── kite_mage.js     # Mage farming script
-├── README.md
-├── CHANGELOG.md
-├── LICENSE
-└── .gitignore
-```
-
-New scripts for other characters (priest, ranger, merchant, ...) can be added as sibling `.js` files and documented in the table above.
-
 ## Disclaimer
 
 This project is unofficial and not affiliated with Adventure Land. Automation is part of the game, but use these scripts at your own risk and in line with the game's rules.
