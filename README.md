@@ -6,11 +6,11 @@ Automation scripts for [Adventure Land](https://adventure.land), the MMORPG wher
 
 | File | Character | Description |
 |------|-----------|-------------|
-| [`kite_mage.js`](https://github.com/the-wittch/Adventure-Land/blob/main/mage-farming.js) | Mage | Auto-farms with dynamic target picking, kiting, and automatic potion restocking. |
+| [`Mage Farming`](https://github.com/the-wittch/Adventure-Land/blob/main/mage-farming.js) | Mage | Auto-farms with dynamic target picking, kiting, and automatic potion restocking. |
 
 ## Features
 
-`kite_mage.js`:
+`mage_farming.js`:
 
 - **Dynamic target selection** - scores every visible monster by XP earned per point of effort (`xp / (attack + defense + hp/100)`) and weights closer monsters higher, so the character always fights the most efficient safe target.
 - **Junk filter** - skips training dummies (`mtype == "dummy"`) and any monster whose `max_hp` is above `MAX_MONSTER_HP`, keeping the bot away from bosses and tanky mobs.
@@ -25,19 +25,19 @@ Automation scripts for [Adventure Land](https://adventure.land), the MMORPG wher
 
 1. Open Adventure Land and open the code editor for your Mage.
 2. Create a new code file named `kite_mage`.
-3. Paste the contents of [`kite_mage.js`](kite_mage.js).
+3. Paste the contents of [`Mage Farming`](https://github.com/the-wittch/Adventure-Land/blob/main/mage-farming.js).
 4. Make sure `attack_mode` is enabled (either the in-game toggle or the `attack_mode = true` variable at the top).
 5. Run the code.
 
 To use it as a module from another code file:
 
 ```js
-load_code("kite_mage");
+load_code("mage_farming");
 ```
 
 ## Configuration
 
-All tunables are declared at the top of `kite_mage.js`:
+All tunables are declared at the top of `mage_farming.js`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
