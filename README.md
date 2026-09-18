@@ -17,6 +17,7 @@ Automation scripts for [Adventure Land](https://adventure.land), the MMORPG wher
 - **Kiting** - stays at range, backpedals with a normalized away-vector when a monster closes in, and never retreats past the character's own attack range.
 - **Mage `burst`** - uses the burst skill when mana allows (silently skipped if the skill is not unlocked).
 - **Automatic restocking** - when potions drop below the configured thresholds, walks to town, buys with `buy_with_gold()`, then returns to the saved farming spot.
+- **Cross-map roaming** - when nothing good is in range for `ROAM_DELAY` seconds, scores every monster species in `G.monsters`, finds a normal-map spawn in `G.maps`, and `smart_move`s there (even across maps), updating the farming anchor.
 - **Broke fallback** - if gold is too low to restock, it farms low-level `goo` monsters until it can afford potions again.
 - **Chat-log diagnostics** - prints its current action and any script errors with `game_log()`.
 
@@ -47,6 +48,8 @@ All tunables are declared at the top of `kite_mage.js`:
 | `BUY_AT_MPOT` | `5` | Head to town when MP potions drop to this many. |
 | `BUY_TO` | `50` | Restock up to this many of each potion. |
 | `GOO_GOLD_GOAL` | `100` | Once this much gold is earned in broke-mode, try shopping again. |
+| `ROAM_MAX_ATT` | `150` | When roaming, ignore monster species whose attack is above this (survivability). |
+| `ROAM_DELAY` | `8` | Seconds with no valid target before relocating to a new spawn/map. |
 
 ## How It Works
 
@@ -70,7 +73,17 @@ Every stat is guarded with `Number(value) || 0`, and if no monster produces a po
 
 ### Restocking
 
-Potion counts are read with `quantity("hpot0")` / `quantity("mpot0")` (including higher tiers). In town, `buy_with_gold()` is used so the character never tries to spend gold it does not have. If it still cannot reach the minimum potion thresholds after buying, `lowGold` mode is enabled and the character farms `goo` until `GOO_GOLD_GOAL` is reached.
+Potion counts are read with `quantity("hpot0")` / `quantity("mpot0")` (including higher tiers). When restocking is needed, the script uses `smart_move({to:"potions"})`, which resolves to the correct potion vendor for the current map (including `halloween` and `winterland`), then buys with `buy_with_gold()` so it never tries to spend gold it does not have. If it still cannot reach the minimum potion thresholds after buying, `lowGold` mode is enabled and the character farms `goo` until `GOO_GOLD_GOAL` is reached, then returns to shopping.
+
+### Roaming
+
+If no valid monster is within `ENGAGE_RANGE` for `ROAM_DELAY` seconds, `roam()` runs:
+
+1. Build the set of species that actually spawn on normal maps (`G.maps`, skipping `ignore`/`instance`/`pvp` maps).
+2. Score each by `xp / (attack + hp/100)`, skipping `dummy` and anything above `MAX_MONSTER_HP` or `ROAM_MAX_ATT`. Species already present on the current map get a 1.3x bonus so the character does not wander needlessly.
+3. Find the best spawn (`find_spawn`, preferring current map and higher `count`) and `smart_move` there, crossing maps if needed. The destination becomes the new `returnPos` anchor for future potion trips.
+
+While low on gold, roaming targets `goo` specifically so the character can rebuild funds.
 
 ## Troubleshooting
 
@@ -83,6 +96,10 @@ The script writes to the in-game log (`game_log`). Useful lines:
 | `Attacking <mtype> d=...` | The character is attacking. |
 | `Kiting <mtype> d=...` | Backpedaling out of melee range. |
 | `Approaching <mtype> d=...` | Closing the gap. |
+| `Pots low, going to town` | Restock trip started via `smart_move({to:"potions"})`. |
+| `Restocked: hpot=... mpot=... gold=...` | Purchase finished; shows counts and remaining gold. |
+| `Broke! Farming goo for gold` | Could not afford the minimum potions; switched to `goo` farming. |
+| `Shop trip failed: ...` | `smart_move`/purchase rejected; the reason is printed. |
 | `No targets. ...` | No valid monster found; the line lists nearby monster stats (`mhp`, `d`, `xp`, `atk`). |
 | `attack_mode is OFF` | The in-game attack toggle is disabled. |
 
