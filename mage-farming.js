@@ -11,6 +11,7 @@ var GOO_GOLD_GOAL  = 100;    // once we have this much gold, try town again
 var ROAM_MAX_ATT   = 150;    // when roaming, ignore species with attack above this
 var ROAM_DELAY     = 8;      // seconds with no target before relocating
 var ROAM_COOLDOWN  = 30;     // seconds between failed roam attempts (prevents spam)
+var ACTION_INTERVAL = 110;   // ms between dispatched game actions (~9/s, under server cap)
 
 var returnPos = null;
 var lowGold  = false;        // broke -> farm goo until we can afford pots
@@ -19,8 +20,27 @@ var lastTarget = Date.now();
 var lastRoam  = 0;           // timestamp of last roam attempt (cooldown)
 var failedMaps = {};         // maps smart_move rejected; retried once stale (10 min)
 var lastState = "";
+var lastAction = 0;          // timestamp of the last game action dispatched
+var lastAttack = 0;          // timestamp of the last attack dispatched
+var attackBackoff = 0;       // extra ms between attacks; grows on server rejections
+var cooldownRejects = 0;     // counters rejected cooldown attacks (logged every N)
 
 function mark_failed_map(m) { if (m) failedMaps[m] = Date.now(); }
+
+// Server kicks clients that spam game actions faster than ~10/s, so cap the rate.
+function action_ready() {
+    var now = Date.now();
+    if (now - lastAction < ACTION_INTERVAL) return false;
+    lastAction = now;
+    return true;
+}
+
+// The server rejects attacks sent a few ms too early with reason "cool-down" /
+// "cooldown". Those are routine (not errors) once the attack loop runs hot.
+function is_cooldown_reject(e) {
+    var m = String((e && (e.reason || e.message)) || "").toLowerCase().replace("-", "");
+    return m.indexOf("cooldown") != -1;
+}
 
 // ---- Chat-log helper: only prints when the message changes ----
 function note(msg, color) {
@@ -218,7 +238,8 @@ function mage_burst(target) {
         if ((typeof can_use != "function" || can_use("burst"))
             && character.mp > (G.skills.burst.mp + character.max_mp * 0.3)
             && is_in_range(target, "burst")
-            && !is_on_cooldown("burst")) {
+            && !is_on_cooldown("burst")
+            && action_ready()) {
             use_skill("burst").catch(function () {});
         }
     } catch (e) { /* skill not unlocked yet */ }
@@ -239,7 +260,7 @@ function engage(target) {
         }
         var step = Math.max(character.range * 0.5, 40);
         var base = Math.atan2(dy, dx);
-        var moved = false;
+        var found = false;
         // fan the retreat angle out a full circle so we never back straight into
         // water/walls; first walkable direction closest to straight-back wins
         for (var i = 0; i < 16; i++) {
@@ -247,23 +268,38 @@ function engage(target) {
             var rx = character.real_x + Math.cos(ang) * step;
             var ry = character.real_y + Math.sin(ang) * step;
             if (can_move_to(rx, ry)) {
-                note("Kiting " + target.mtype + " d=" + Math.round(dist), "#FFAA00");
-                move(rx, ry).catch(function () {});
-                moved = true;
+                if (action_ready()) {
+                    note("Kiting " + target.mtype + " d=" + Math.round(dist), "#FFAA00");
+                    move(rx, ry).catch(function () {});
+                }
+                found = true;
                 break;
             }
         }
-        if (moved) return;
+        if (found) return; // moving now, or will next tick once the throttle opens
         note("Boxed in, fighting in place", "#FFAA00"); // fall through to attack
     }
 
     if (is_in_range(target)) {
-        if (can_attack(target)) {
+        if (can_attack(target)
+            && Date.now() - lastAttack >= attackBackoff
+            && action_ready()) {
+            lastAttack = Date.now();
             note("Attacking " + target.mtype + " d=" + Math.round(dist), "#00FF00");
             attack(target).then(function () {
                 reduce_cooldown("attack", character.ping * 0.95);
+                attackBackoff = Math.max(ACTION_INTERVAL, attackBackoff - 50);
             }).catch(function (e) {
-                note("Attack failed: " + (e && e.reason ? e.reason : e), "#FF5555");
+                if (is_cooldown_reject(e)) {
+                    // Sent a hair too early: widen the gap, don't flood the log.
+                    attackBackoff = Math.min(attackBackoff + 150, 1000);
+                    if (++cooldownRejects % 5 == 0)
+                        note("Attack too early, backing off (" + Math.round(attackBackoff) + "ms)",
+                             "#FFAA00");
+                } else {
+                    attackBackoff = Math.max(ACTION_INTERVAL, attackBackoff - 50);
+                    note("Attack failed: " + (e && e.reason ? e.reason : e), "#FF5555");
+                }
             });
         }
         mage_burst(target);
