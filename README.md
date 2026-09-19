@@ -72,6 +72,7 @@ All tunables are declared at the top of `mage-farming.js`:
  | `BANK_NAMES` | `[]` | Exact item names to safe-store in the bank (protect valuables/event items). |
  | `BANK_JUNK` | `true` | Bank every other non-potion drop too, so you can sell it off by hand later. |
  | `BANK_MAX_ITEMS` | `900` | Stop banking once the bank holds this many slots (keeps junk-bin from overflowing). |
+| `BANK_FULL_SELL` | `true` | When the bank is full, sell junk-bin drops instead of banking them so the bot clears inventory and gets back to fighting. |
  | `COMPOUND_TARGETS` | `[]` | Exact item names whose duplicates may be compounded (e.g. `["glitchblade"]`). |
  | `COMPOUND_MAX_TIER` | `3` | Max `upgrade_level` the bot will auto-compound toward. |
  | `COMPOUND_FAIL_SKIP_MS` | `3600000` | Milliseconds to ignore an item after a rejected compound request. |
@@ -107,7 +108,9 @@ That ratio drives three knobs:
 - **Targets** (`TARGET_RISK_FRAC`) - never pick a fight above the ratio, and scoring mildly prefers targets with lower risk.
 - **Roaming** (`ROAM_RISK_FRAC`) - never roam *to* a spawn whose species is deadly at your current level (a species like the Vampire Rat, `prat`, qualifies early and stops qualifying as you level).
 
-If no safe hop exists it accepts the line of least resistance and eventually hands the remaining leg to `smart_move`. The character only fights on the move as an emergency when HP drops below half with a monster in reach.
+If no safe hop exists it accepts the line of least resistance and eventually hands the remaining leg to `smart_move`. The character only fights on the move as an emergency when HP drops below half with a monster in reach; it never stops a walk to fight a farmable monster already within range.
+
+After a town trip the character is never routed cross-map from inside a building: while on the `bank` map it first walks out to the town square (`BANK_EXIT`, mainland) and lets the normal target-selection/fight loop resume from there, before any `smart_move` to the chosen farm map.
 
 ### Restocking
 
@@ -131,7 +134,7 @@ During each town restock trip, after walking to town, the script runs a tidy pas
 2. **Equip** - if `GEAR_ENABLED`, uses the client's `find_equipment()` to detect upgrades and equips them from inventory. It never equips when the better copy is in the bank, and never downgrades.
 3. **Bank** - walks to the bank and stores two kinds of items: anything named in `BANK_NAMES` (protected valuables), and, when `BANK_JUNK` is on, every other drop (the "junk bin") so you can sell it off by hand without losing loot to d/cs or a full bag.
 
-Potions (`hpot*`/`mpot*`/`cpot*`/`vpot*`) and anything in `KEEP_NAMES` are **never** compounded or banked. Stackable materials count toward compounding because `has_item()` treats stacks as present. The junk-bin stops at `BANK_MAX_ITEMS` bank slots, and if the walk to the bank fails, banking is skipped for that trip.
+Potions (`hpot*`/`mpot*`/`cpot*`/`vpot*`) and anything in `KEEP_NAMES` are **never** compounded, banked, or sold. Stackable materials count toward compounding because `has_item()` treats stacks as present. The junk-bin stops at `BANK_MAX_ITEMS` bank slots; once full it sells junk-bin drops instead (`BANK_FULL_SELL`), and if the walk to the bank fails, banking is skipped for that trip. Protected `BANK_NAMES` items are never sold — with a full bank they simply stay carried until there is room.
 
 The engine loop (attack/move/skill) and the tidy pass share the same action throttle, so gear handling can never trip the server's request cap.
 

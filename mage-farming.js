@@ -29,6 +29,7 @@ var KEEP_NAMES        = [];     // exact item names to keep carried, e.g. ["gold
 var BANK_NAMES        = [];     // exact item names to safe-store in the bank
 var BANK_JUNK         = true;   // bank every other non-potion drop, so you can sell by hand
 var BANK_MAX_ITEMS    = 900;    // stop banking once the bank holds this many slots
+var BANK_FULL_SELL    = true;   // when the bank is full, sell junk-bin drops instead
 var COMPOUND_TARGETS  = [];     // exact item names whose duplicates may be compounded
 var COMPOUND_MAX_TIER = 3;      // maximal upgrade_level to auto-compound toward
 var COMPOUND_FAIL_SKIP_MS = 60 * 60 * 1000; // back off failing compound requests
@@ -43,6 +44,10 @@ var lastTarget = Date.now();
 var lastRoam  = 0;           // timestamp of last roam attempt (cooldown)
 var failedMaps = {};         // maps smart_move rejected; retried once stale (10 min)
 var lastState = "";
+
+// Town square on the mainland, just outside the bank door - the spot we retreat
+// to before routing anywhere, so the bot never paths across maps from the bank.
+var BANK_EXIT = { map: "mainland", x: 0, y: 0 };
 var lastAction = 0;          // timestamp of the last game action dispatched
 var lastAttack = 0;          // timestamp of the last attack dispatched
 var attackBackoff = 0;       // extra ms between attacks; grows on server rejections
@@ -201,10 +206,27 @@ function find_spawn(type) {
     return best;
 }
 
+// ---- Leave the bank interior to the mainland before any long path ----
+function leave_bank() {
+    if (character.map != "bank") return Promise.resolve();
+    if (typeof smart != "undefined" && smart.moving) return smart.moving; // already leaving
+    note("Leaving the bank", "#FF8800");
+    return smart_move({ to: BANK_EXIT.map, x: BANK_EXIT.x, y: BANK_EXIT.y })
+        .catch(function (e) {
+            game_log("Bank exit failed: " + (e && e.reason ? e.reason : e), "#FF3333");
+        });
+}
+
 function roam() {
     if (shopping || smart.moving) return;
     if (Date.now() - lastRoam < ROAM_COOLDOWN * 1000) return; // silent, kills reject-spam
     lastRoam = Date.now();
+    if (character.map == "bank") {
+        // Never path from inside the bank - get to the mainland, then re-evaluate.
+        note("Leaving the bank before roaming out", "#FF8800");
+        leave_bank();
+        return;
+    }
     var type = lowGold ? "goo" : best_roam_species();
     if (!type) { note("No roam target found", "#FF5555"); return; }
     var spot = find_spawn(type);
@@ -233,14 +255,16 @@ function go_back() {
     if (!returnPos) return Promise.resolve();
     var p = returnPos;
     returnPos = null;
-    if (p.map == character.map) {
-        set_steer(p.x, p.y);
-        return Promise.resolve();
-    }
-    return smart_move({ to: p.map }).then(function () {
-        if (character.map == p.map) set_steer(p.x, p.y);
-    }).catch(function (e) {
-        game_log("Return failed: " + (e && e.reason ? e.reason : e), "#FF3333");
+    return leave_bank().then(function () {
+        if (p.map == character.map) {
+            set_steer(p.x, p.y);
+            return;
+        }
+        return smart_move({ to: p.map }).then(function () {
+            if (character.map == p.map) set_steer(p.x, p.y);
+        }).catch(function (e) {
+            game_log("Return failed: " + (e && e.reason ? e.reason : e), "#FF3333");
+        });
     });
 }
 
@@ -534,16 +558,21 @@ function tidy_once() {
         if (bankWalkFailed) return tidy_done();
         if (!BANK_NAMES.length && !BANK_JUNK) return tidy_done();
         var bankFull = character.bank && character.bank.length >= BANK_MAX_ITEMS;
-        var bi = null;
+        var bi = null, sellMode = false;
         for (var s = 0; s < character.items.length; s++) {
             var is = character.items[s];
             if (!is || is.nquest || is_keep(is) || is_potion(is)) continue;
-            if (BANK_NAMES.indexOf(is.name) != -1) { bi = s; break; }  // protected item
-            if (BANK_JUNK && !bankFull
-                && COMPOUND_TARGETS.indexOf(is.name) == -1) { bi = s; break; } // junk bin
+            if (skip_cached("bank|" + is.name)) continue; // failed before - skip it
+            if (BANK_NAMES.indexOf(is.name) != -1) {
+                if (bankFull) continue; // protected item but no room - keep carried
+                bi = s; sellMode = false; break;
+            }
+            if (!BANK_JUNK || COMPOUND_TARGETS.indexOf(is.name) != -1) continue;
+            if (bankFull && !BANK_FULL_SELL) continue; // full and not selling - leave it
+            bi = s; sellMode = bankFull; break;        // junk bin: bank, or sell when full
         }
         if (bi === null) return tidy_done();
-        if (!character.bank) {
+        if (!bankFull && !character.bank) {
             note("Walking to the bank", "#FF8800");
             return smart_move({ to: "bank" }).catch(function (e) {
                 bankWalkFailed = true;
@@ -552,6 +581,13 @@ function tidy_once() {
             });
         }
         if (!action_ready()) return null;
+        if (sellMode) {
+            note("Bank full - selling junk: " + character.items[bi].name, "#FF8800");
+            return sell(bi).catch(function (e) {
+                skipCache["bank|" + character.items[bi].name] = Date.now();
+                note("Sell failed: " + (e && e.reason ? e.reason : e), "#FF5555");
+            });
+        }
         note("Banking " + character.items[bi].name, "#FF8800");
         return bank_store(bi).catch(function (e) {
             skipCache["bank|" + character.items[bi].name] = Date.now();
