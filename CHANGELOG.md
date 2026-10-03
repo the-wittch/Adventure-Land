@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Multi-class layout: shared [`common.js`](common.js) library plus thin class entry scripts.
+  - Farmers: `mage-farming.js`, `warrior-farming.js`, `ranger-farming.js`, `rogue-farming.js`, `priest-farming.js`, `paladin-farming.js`
+  - Economy: `merchant.js` (town idle + restock/tidy, no combat)
+  - `begin_farming({ role, style, skills, engage, tick })` plugs class behavior into the shared loop
+  - `try_skill()` for safe, throttled skill use; kite vs melee engage styles
+- Built-in `find_equipment()` / `item_score()` / `can_wear()` gear helpers: class-aware slot mapping, bank-vs-inventory best-copy checks, and strictly-better auto-equip (uses `calculate_item_properties` when available).
+- `COMPOUND_BUY_SCROLLS`: auto `smart_move` to the scrolls NPC and buy the needed `cscroll*` before compounding.
+- Delayed single-shot `respawn()` on death (15s, no spam).
+- Bag-full town trips when `character.esize <= 2` (cooldown-shared with shop failures).
+- `status()` helper so combat distance/HP flicker updates the UI without flooding `game_log`.
+
+### Fixed
+- Compound API now requires three identical items + scroll (was incorrectly calling `compound(a, b)`).
+- Item tier reads `item.level` (Adventure Land's real field) instead of `upgrade_level`.
+- Bank fullness counts occupied slots across `items0..N` packs instead of the invalid `character.bank.length`.
+- Kiting uses `xmove` so short retreats path around obstacles.
+- Action throttle default raised to 125ms for safer tidy-loop headroom.
+
+### Added (earlier)
 - `mage-farming.js` (renamed from `kite_mage.js`) gear management:
   - Junk bin: banks every non-potion drop during town restock trips for manual selling (`BANK_JUNK`, capped by `BANK_MAX_ITEMS`).
   - Auto-compound duplicate gear (data-driven material check via `G.items[name].compound`; stackable materials now counted).
