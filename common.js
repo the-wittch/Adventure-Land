@@ -26,12 +26,14 @@ var STEER_STEP     = 44;   // hop size for danger-aware movement (px)
 var BUY_AT_HPOT    = 20;
 var BUY_AT_MPOT    = 20;
 var BUY_TO          = 300;
-var GOO_GOLD_GOAL  = 10000;    // once we have this much gold, try town again
-var ROAM_MAX_ATT   = 150;  // when roaming, ignore species with attack above this
-var ROAM_OTHER_RATIO = 2.5;// leave the current map only if another species scores 2.5x better
+var GOO_GOLD_GOAL  = 0;      // 0 = auto (gold needed to buy BUY_TO of each pot); broke-mode exit
+var ROAM_MAX_ATT   = 400;  // hard roam cap (risk_frac is the real gate; this only drops absurd bosses)
+var ROAM_OTHER_RATIO = 1.6;// leave the current map if another species scores this much better
 var ROAM_MAX_RESPAWN = 600; // ignore species that take longer than this (s) to respawn - jr (7.2h!) and spawn-once bosses aren't farmable
 var ROAM_DELAY     = 8;      // seconds with no target before relocating
 var ROAM_COOLDOWN  = 30;     // seconds between failed roam attempts (prevents spam)
+var USE_PROGRESSION = true;  // bias toward get_progression() farm when the game exposes it
+var TRIVIAL_HP_FRAC = 0.5;   // mob max_hp below character.attack * this is "too easy"
 var ACTION_INTERVAL = 125;   // ms between dispatched game actions (~8/s, under server cap)
 var SHOP_FAIL_COOLDOWN = 60 * 1000; // ms to wait before retrying a failed town trip
 
@@ -40,8 +42,8 @@ var GEAR_ENABLED      = true;   // auto-equip strictly-better gear while in town
 var KEEP_NAMES        = [];     // exact item names to keep carried, e.g. ["golden_poop"]
 var BANK_NAMES        = [];     // exact item names to safe-store in the bank
 var BANK_JUNK         = true;   // bank every other non-potion drop, so you can sell by hand
-var BANK_MAX_ITEMS    = 900;    // stop banking once the bank holds this many slots
-var BANK_FULL_SELL    = true;   // when the bank is full, sell junk-bin drops instead
+var BANK_MAX_ITEMS    = 900;    // soft cap: also treat bank as full at this many occupied slots
+var BANK_FULL_SELL    = true;   // when the bank is full, leave vault and sell junk at a vendor
 var COMPOUND_TARGETS  = [];     // exact item names whose duplicates may be compounded
 var COMPOUND_MAX_TIER = 3;      // max item.level to auto-compound toward
 var COMPOUND_BUY_SCROLLS = true; // buy cscroll* with gold when a compound needs one
@@ -111,22 +113,136 @@ function qty(names) {
 function hpot_count() { return qty(["hpot0", "hpot1", "hpot2"]); }
 function mpot_count() { return qty(["mpot0", "mpot1", "mpot2"]); }
 
+function potion_unit_cost(name) {
+    return (G.items[name] && Number(G.items[name].g)) || 20;
+}
+
+// Gold needed to top pots back up to BUY_TO (used for broke-mode exit).
+function restock_gold_need() {
+    var needH = Math.max(0, BUY_TO - hpot_count());
+    var needM = Math.max(0, BUY_TO - mpot_count());
+    return needH * potion_unit_cost("hpot0") + needM * potion_unit_cost("mpot0");
+}
+
+function goo_gold_goal() {
+    if (GOO_GOLD_GOAL > 0) return GOO_GOLD_GOAL;
+    // At least enough for a full restock, with a small buffer.
+    return Math.max(500, restock_gold_need() + 100);
+}
+
+function can_afford_restock() {
+    return character.gold >= restock_gold_need();
+}
+
+// Broke-mode should only stick while pots are low AND we cannot buy more.
+function refresh_low_gold() {
+    var potsLow = hpot_count() <= BUY_AT_HPOT || mpot_count() <= BUY_AT_MPOT;
+    if (!potsLow) {
+        if (lowGold) {
+            lowGold = false;
+            note("Potions OK - resuming normal farming", "#00FF00");
+        }
+        return;
+    }
+    if (lowGold && (character.gold >= goo_gold_goal() || can_afford_restock())) {
+        lowGold = false;
+        note("Can afford potions - leaving goo grind", "#00FF00");
+    }
+}
+
 // ---- Monster helpers (monsters are in parent.entities) ----
 function is_monster(e) {
     return e && e.type == "monster" && e.visible && !e.dead && e.hp > 0
         && (!e.map || e.map == character.map);
 }
 
+function monster_def(type) {
+    return (type && G.monsters && G.monsters[type]) || {};
+}
+
 function is_junk(m) {
+    if (!m || !m.mtype) return true;
     if (IGNORE_MTYPES.indexOf(m.mtype) != -1) return true; // hard-ignored species
     if (m.mtype == "dummy") return true;                   // training dummies
-    if (m.max_hp > MAX_MONSTER_HP) return true;            // bosses / tanky mobs
+    var md = monster_def(m.mtype);
+    var hp = Number(m.max_hp) || Number(md.hp) || 0;
+    if (hp > MAX_MONSTER_HP) return true;                  // bosses / tanky mobs
     return false;
 }
 
+function our_dps() {
+    var freq = Number(character.frequency) || 1;
+    return Math.max(1, (Number(character.attack) || 1) * freq);
+}
+
+// Pull recommended farm mtypes from the in-game Progression Guide when present.
+function recommended_farm_types() {
+    var out = [], seen = {};
+    function add(v) {
+        if (!v) return;
+        if (typeof v == "string") {
+            if (G.monsters[v] && !seen[v]) { seen[v] = true; out.push(v); }
+            return;
+        }
+        if (typeof v != "object") return;
+        if (typeof v.monster == "string") add(v.monster);
+        if (typeof v.mtype == "string") add(v.mtype);
+        if (typeof v.type == "string") add(v.type);
+        if (typeof v.farm == "string") add(v.farm);
+        if (v.farm && typeof v.farm == "object") add(v.farm);
+        if (Array.isArray(v.monsters)) for (var i = 0; i < v.monsters.length; i++) add(v.monsters[i]);
+        if (Array.isArray(v)) for (var j = 0; j < v.length; j++) add(v[j]);
+    }
+    if (!USE_PROGRESSION) return out;
+    try {
+        if (typeof get_progression == "function") add(get_progression());
+    } catch (e) { /* guide unavailable */ }
+    return out;
+}
+
+// XP/hour-style score for a species vs our current attack/HP. Higher is better.
+// Uses G.monsters (not live entity crumbs) so goo does not win just by being wounded/nearby.
+function species_score(type, riskFrac) {
+    var md = monster_def(type);
+    if (!md || !Object.keys(md).length) return -1;
+    if (type == "dummy" || IGNORE_MTYPES.indexOf(type) != -1) return -1;
+    var hp  = Number(md.hp) || 0;
+    var xp  = Number(md.xp) || 0;
+    var atk = Number(md.attack) || 0;
+    if (hp <= 0 || xp <= 0 || hp > MAX_MONSTER_HP) return -1;
+    if (atk > ROAM_MAX_ATT) return -1;
+    if (too_risky_type(type, riskFrac != null ? riskFrac : TARGET_RISK_FRAC))
+        return -1;
+
+    var rr = Number(md.respawn);
+    if (!isNaN(rr) && (rr <= 0 || rr > ROAM_MAX_RESPAWN)) return -1;
+
+    var killTime = hp / our_dps();                 // seconds to burn the pack member
+    var xpRate = xp / Math.max(0.35, killTime);    // XP per second of fighting
+
+    // Survivability: how many of us-die-times fit in one kill.
+    var ttd = character.max_hp / Math.max(0.25, monster_dps(type));
+    var sustain = ttd / Math.max(0.35, killTime);
+    if (sustain < 1.2) xpRate *= 0.05;             // will melt - almost never pick
+    else if (sustain < 2) xpRate *= 0.45;
+    else if (sustain > 4) xpRate *= 1.15;          // comfortable farm
+
+    // Soft-penalize trash we one-shot forever (classic "stuck on goo" case).
+    if (hp < (Number(character.attack) || 1) * TRIVIAL_HP_FRAC) xpRate *= 0.25;
+    // Mild preference for content near our punch weight.
+    var hpRatio = hp / Math.max(1, Number(character.max_hp) || 1);
+    if (hpRatio >= 0.15 && hpRatio <= 1.2) xpRate *= 1.25;
+
+    var prog = recommended_farm_types();
+    if (prog.indexOf(type) != -1) xpRate *= 2.75;
+
+    return xpRate;
+}
+
 function best_score_target() {
-    var best = null, bestScore = 0;
+    var best = null, bestScore = -1;
     var nearest = null, nearestD = Infinity;
+    var prog = recommended_farm_types();
     for (var id in parent.entities) {
         var m = parent.entities[id];
         if (!is_monster(m) || is_junk(m) || too_risky_target(m)) continue;
@@ -134,27 +250,33 @@ function best_score_target() {
         if (d > ENGAGE_RANGE) continue;
         if (d < nearestD) { nearestD = d; nearest = m; }
 
-        var xp  = Number(m.xp) || 0;
-        var atk = Number(m.attack) || 0;
-        var def = Number(m.defense) || 0;
-        var hp  = Number(m.hp) || 1;
-        var score = xp / (atk + def + hp / 100) / (1 + d / 300)
-                  / (1 + risk_frac(m.mtype) * 3); // prefer targets we can out-sustain
+        var score = species_score(m.mtype);
+        if (score < 0) continue;
+        // Prefer the guide monster when several options are close.
+        if (prog.indexOf(m.mtype) != -1) score *= 1.15;
+        score = score / (1 + d / 400);
         if (score > bestScore) { bestScore = score; best = m; }
     }
     return best || nearest; // fall back to closest valid monster
 }
 
+function nearest_mtype(type) {
+    var best = null, bestD = Infinity;
+    for (var id in parent.entities) {
+        var m = parent.entities[id];
+        if (!is_monster(m) || m.mtype != type) continue;
+        var d = parent.distance(character, m);
+        if (d < bestD) { bestD = d; best = m; }
+    }
+    return best;
+}
+
 function pick_target() {
+    refresh_low_gold();
+    // Broke-mode prefers goo for fast gold, but never idles if none are around.
     if (lowGold) {
-        var best = null, bestD = Infinity;
-        for (var id in parent.entities) {
-            var m = parent.entities[id];
-            if (!is_monster(m) || m.mtype != "goo") continue;
-            var d = parent.distance(character, m);
-            if (d < bestD) { bestD = d; best = m; }
-        }
-        return best;
+        var goo = nearest_mtype("goo");
+        if (goo) return goo;
     }
     return best_score_target();
 }
@@ -178,22 +300,22 @@ function available_species() {
 }
 
 function best_roam_species() {
+    refresh_low_gold();
+    var prog = recommended_farm_types();
+    // If the Progression Guide names a farmable species, go there unless broke.
+    if (!lowGold && prog.length) {
+        for (var p = 0; p < prog.length; p++) {
+            if (species_score(prog[p], ROAM_RISK_FRAC) > 0) return prog[p];
+        }
+    }
+
     var avail = available_species();
     var bestLocal = null, bestGlobal = null;
     for (var type in avail) {
-        if (type == "dummy") continue;
-        if (IGNORE_MTYPES.indexOf(type) != -1) continue;
-        var md = G.monsters[type];
-        if (!md) continue;
-        var hp  = Number(md.hp) || 0;
-        var atk = Number(md.attack) || 0;
-        var xp  = Number(md.xp) || 0;
-        if (hp <= 0 || hp > MAX_MONSTER_HP) continue; // bosses
-        if (atk > ROAM_MAX_ATT) continue;             // too dangerous
-        if (is_lethal(type, ROAM_RISK_FRAC)) continue; // deadly for current level
-        var rr = Number(md.respawn);
-        if (!isNaN(rr) && (rr <= 0 || rr > ROAM_MAX_RESPAWN)) continue; // only respawns every 7.2h / once - not farmable
-        var score = xp / (atk + hp / 100);
+        var score = species_score(type, ROAM_RISK_FRAC);
+        if (score < 0) continue;
+        // While broke, bias roam toward goo specifically.
+        if (lowGold && type == "goo") score *= 3;
         if (spawn_on_map(type, character.map)) {
             if (!bestLocal || score > bestLocal.score) bestLocal = { type: type, score: score };
         }
@@ -202,9 +324,13 @@ function best_roam_species() {
     // Stay on this map whenever it has a farmable species. Only leave when the
     // best foreign species is clearly (ROAM_OTHER_RATIO x) more efficient, so
     // the character doesn't ping-pong between maps (travel is slow AND deadly).
+    // Exception: if the best local farm is "trivial" goo-tier and a better
+    // foreign species exists, leave at a lower bar so we do not park on goo.
     if (bestLocal) {
         if (!bestGlobal) return bestLocal.type;
-        if (bestGlobal.score > bestLocal.score * ROAM_OTHER_RATIO) return bestGlobal.type;
+        var leaveAt = ROAM_OTHER_RATIO;
+        if (bestLocal.type == "goo" && bestGlobal.type != "goo") leaveAt = 1.15;
+        if (bestGlobal.score > bestLocal.score * leaveAt) return bestGlobal.type;
         return bestLocal.type;
     }
     return bestGlobal ? bestGlobal.type : null;
@@ -313,7 +439,7 @@ function steer_radius(type) {
 // lost per second if we stand in it. That makes "dangerous" scale with level
 // automatically instead of being a fixed flat threshold.
 function monster_dps(type) {
-    var md = G.monsters[type] || {};
+    var md = monster_def(type);
     var freq = Number(md.frequency) || 1;
     return (Number(md.attack) || 0) / freq;
 }
@@ -322,21 +448,36 @@ function risk_frac(type) {
     return monster_dps(type) / Math.max(1, character.max_hp);
 }
 
-// NOTE: monsters with no aggro/charge never chase, so they aren't hazards
-// when merely passing by. minRisk is the fraction-of-maxHP-per-second gate.
-function is_lethal(type, minRisk) {
-    var md = G.monsters[type] || {};
+// Pathing hazard: only aggro/charge packs, plus a high absolute attack backstop.
+// Do NOT reuse this for fight targeting — it was wrongly excluding good farms.
+function is_lethal_path(type) {
+    var md = monster_def(type);
     if ((Number(md.aggro) || 0) <= 0 && (Number(md.charge) || 0) <= 0) return false;
-    if ((Number(md.attack) || 0) > PATH_MAX_ATT) return true;   // absolute backstop
-    return risk_frac(type) >= minRisk;
+    if ((Number(md.attack) || 0) > PATH_MAX_ATT) return true;
+    return risk_frac(type) >= PATH_RISK_PER_SEC;
 }
 
 function is_dangerous_type(type) {
-    return is_lethal(type, PATH_RISK_PER_SEC);
+    return is_lethal_path(type);
+}
+
+// Fight targeting / roam: risk vs our HP only (and one-shot protection).
+function too_risky_type(type, frac) {
+    if (!type) return true;
+    var md = monster_def(type);
+    var atk = Number(md.attack) || 0;
+    if (atk > character.max_hp * 0.5) return true; // probable one-shot
+    return risk_frac(type) >= (frac != null ? frac : TARGET_RISK_FRAC);
 }
 
 function too_risky_target(m) {
-    return m && m.mtype && is_lethal(m.mtype, TARGET_RISK_FRAC);
+    return m && m.mtype && too_risky_type(m.mtype, TARGET_RISK_FRAC);
+}
+
+// Kept for any older call sites / class scripts.
+function is_lethal(type, minRisk) {
+    if (minRisk == null || minRisk == PATH_RISK_PER_SEC) return is_lethal_path(type);
+    return risk_frac(type) >= minRisk;
 }
 
 function point_in_danger(x, y) {
@@ -465,6 +606,7 @@ function defend_on_the_way() {
 var tidyPhase = 0;       // 0 compound, 1 equip, 2 bank
 var tidyFinished = false;
 var bankWalkFailed = false;
+var bankKnownFull = false; // set when vault has no free slots or store is rejected
 var shoppingStart = 0;   // when the current town trip began (safety timeout)
 var skipCache = {};      // key -> timestamp of a failed/low-priority action
 
@@ -508,27 +650,75 @@ function item_level(it) {
     return 0;
 }
 
-function bank_item_count() {
-    // character.bank is only set inside the bank; packs are items0..itemsN arrays.
-    var bank = character.bank;
-    if (!bank) return 0;
-    var n = 0;
-    for (var key in bank) {
-        if (key.indexOf("items") != 0 || !bank[key]) continue;
-        for (var i = 0; i < bank[key].length; i++) if (bank[key][i]) n++;
-    }
-    return n;
-}
-
-function for_each_bank_item(fn) {
+function for_each_bank_pack(fn) {
+    // character.bank is only populated on the bank map; packs are items0..itemsN.
     var bank = character.bank;
     if (!bank) return;
     for (var key in bank) {
-        if (key.indexOf("items") != 0 || !bank[key]) continue;
-        for (var i = 0; i < bank[key].length; i++) {
-            if (bank[key][i]) fn(bank[key][i]);
-        }
+        if (key.indexOf("items") != 0) continue;
+        var pack = bank[key];
+        if (!pack || typeof pack != "object") continue;
+        fn(key, pack);
     }
+}
+
+function bank_item_count() {
+    var n = 0;
+    for_each_bank_pack(function (key, pack) {
+        for (var i = 0; i < pack.length; i++) if (pack[i]) n++;
+    });
+    return n;
+}
+
+function bank_free_slots() {
+    // -1 = bank UI not open (unknown). 0 = every unlocked pack slot is occupied.
+    if (!character.bank) return -1;
+    var free = 0, seen = 0;
+    for_each_bank_pack(function (key, pack) {
+        for (var i = 0; i < pack.length; i++) {
+            seen++;
+            if (!pack[i]) free++;
+        }
+    });
+    if (!seen) return 0; // on bank map but no packs unlocked / visible
+    return free;
+}
+
+function is_bank_full() {
+    if (bankKnownFull) return true;
+    if (!character.bank) return false;
+    var free = bank_free_slots();
+    if (free == 0) return true;
+    if (bank_item_count() >= BANK_MAX_ITEMS) return true;
+    return false;
+}
+
+function is_bank_space_reject(e) {
+    var m = String((e && (e.reason || e.message)) || e || "").toLowerCase();
+    return m.indexOf("full") != -1
+        || m.indexOf("space") != -1
+        || m.indexOf("no_space") != -1
+        || m.indexOf("cant_store") != -1
+        || m.indexOf("bank_store") != -1
+        || (m.indexOf("bank") != -1 && m.indexOf("slot") != -1);
+}
+
+function for_each_bank_item(fn) {
+    for_each_bank_pack(function (key, pack) {
+        for (var i = 0; i < pack.length; i++) {
+            if (pack[i]) fn(pack[i]);
+        }
+    });
+}
+
+// Leave the vault and walk to a buyback vendor before selling — sell() does
+// nothing useful inside the bank map.
+function go_sell_vendor() {
+    note("Bank full - heading to vendor to sell junk", "#FF8800");
+    var leave = character.map == "bank" ? leave_bank() : Promise.resolve();
+    return leave.then(function () {
+        return smart_move({ to: "potions" });
+    });
 }
 
 function find_scroll_slot(name) {
@@ -777,26 +967,43 @@ function tidy_once() {
         }
     }
 
-    // ---- Phase 2: bank everything not kept (needs bank range) ----
+    // ---- Phase 2: bank valuables/junk; if the vault is full, sell junk in town ----
     if (tidyPhase == 2) {
         if (bankWalkFailed) return tidy_done();
         if (!BANK_NAMES.length && !BANK_JUNK) return tidy_done();
-        var bankFull = character.bank && bank_item_count() >= BANK_MAX_ITEMS;
+
+        // Discover real fullness as soon as the bank UI is open.
+        if (character.bank && bank_free_slots() == 0) bankKnownFull = true;
+        var bankFull = is_bank_full();
+
         var bi = null, sellMode = false;
         for (var s = 0; s < character.items.length; s++) {
             var is = character.items[s];
             if (!is || is.nquest || is_keep(is) || is_potion(is)) continue;
-            if (skip_cached("bank|" + is.name)) continue; // failed before - skip it
-            if (BANK_NAMES.indexOf(is.name) != -1) {
-                if (bankFull) continue; // protected item but no room - keep carried
+            if (skip_cached("bank|" + is.name) || skip_cached("sell|" + is.name)) continue;
+
+            var protected = BANK_NAMES.indexOf(is.name) != -1;
+            var compoundable = COMPOUND_TARGETS.indexOf(is.name) != -1;
+
+            if (protected) {
+                if (bankFull) continue; // keep carried until there is vault room
                 bi = s; sellMode = false; break;
             }
-            if (!BANK_JUNK || COMPOUND_TARGETS.indexOf(is.name) != -1) continue;
-            if (bankFull && !BANK_FULL_SELL) continue; // full and not selling - leave it
-            bi = s; sellMode = bankFull; break;        // junk bin: bank, or sell when full
+            if (!BANK_JUNK) continue;
+            // Hold compound fodder for later trips unless the vault is full — then
+            // clear the bag so potions can still be bought.
+            if (compoundable && !bankFull) continue;
+            if (bankFull && !BANK_FULL_SELL) continue;
+            bi = s; sellMode = bankFull; break;
         }
-        if (bi === null) return tidy_done();
-        if (!bankFull && !character.bank) {
+        if (bi === null) {
+            if (bankFull && BANK_FULL_SELL)
+                note("Bank full - inventory cleared of sellable junk", "#FFAA00");
+            return tidy_done();
+        }
+
+        // Still need to visit the vault once to store items / learn it is full.
+        if (!sellMode && !character.bank) {
             note("Walking to the bank", "#FF8800");
             return smart_move({ to: "bank" }).catch(function (e) {
                 bankWalkFailed = true;
@@ -804,17 +1011,42 @@ function tidy_once() {
                 return null;
             });
         }
-        if (!action_ready()) return null;
+
+        // Selling must happen at a town vendor, never inside the bank map.
         if (sellMode) {
-            note("Bank full - selling junk: " + character.items[bi].name, "#FF8800");
+            if (character.map == "bank") {
+                return go_sell_vendor().catch(function (e) {
+                    bankWalkFailed = true;
+                    game_log("Vendor path failed: " + (e && e.reason ? e.reason : e), "#FF3333");
+                    return null;
+                });
+            }
+            if (!action_ready()) return null;
+            var sellName = character.items[bi] && character.items[bi].name;
+            note("Bank full - selling junk: " + sellName, "#FF8800");
             return sell(bi).catch(function (e) {
-                skipCache["bank|" + character.items[bi].name] = Date.now();
+                var reason = String((e && (e.reason || e.message)) || e || "").toLowerCase();
+                // Wrong map / no NPC — walk to potions and retry next pass.
+                if (reason.indexOf("distance") != -1 || reason.indexOf("nearby") != -1
+                    || reason.indexOf("range") != -1 || reason.indexOf("npc") != -1
+                    || reason.indexOf("merchant") != -1) {
+                    return go_sell_vendor();
+                }
+                skipCache["sell|" + sellName] = Date.now();
                 note("Sell failed: " + (e && e.reason ? e.reason : e), "#FF5555");
             });
         }
-        note("Banking " + character.items[bi].name, "#FF8800");
+
+        if (!action_ready()) return null;
+        var storeName = character.items[bi] && character.items[bi].name;
+        note("Banking " + storeName, "#FF8800");
         return bank_store(bi).catch(function (e) {
-            skipCache["bank|" + character.items[bi].name] = Date.now();
+            if (is_bank_space_reject(e)) {
+                bankKnownFull = true;
+                note("Bank is full - will sell junk at a vendor", "#FFAA00");
+                return null; // next tidy_once pass switches to sellMode
+            }
+            skipCache["bank|" + storeName] = Date.now();
             note("Bank failed: " + (e && e.reason ? e.reason : e), "#FF5555");
         });
     }
@@ -830,7 +1062,12 @@ function tidy_loop(tries) {
     var r = tidy_once();
     if (r && r.done) return null;
     if (r) return r.then(function () { return tidy_loop(0); }, function () { return tidy_loop(0); });
-    if (tries > 40) { tidyFinished = true; return null; }
+    // Allow a full bag of sells (42) plus throttle waits / vendor walks.
+    if (tries > 120) {
+        game_log("Tidy timed out - continuing trip", "#FFAA00");
+        tidyFinished = true;
+        return null;
+    }
     return new Promise(function (resolve) {
         setTimeout(function () { resolve(tidy_loop(tries + 1)); }, ACTION_INTERVAL + 20);
     });
@@ -844,6 +1081,7 @@ function go_shopping() {
     shoppingStart = Date.now();
     tidyFinished = false;
     bankWalkFailed = false;
+    bankKnownFull = false;
     tidyPhase = 0;
     skipCache = {};
     if (!returnPos && character.map) {
@@ -870,12 +1108,17 @@ function go_shopping() {
     }).then(function () {
         game_log("Restocked: hpot=" + hpot_count() + " mpot=" + mpot_count()
                  + " gold=" + character.gold, "#00FF00");
-        lowGold = (hpot_count() <= BUY_AT_HPOT || mpot_count() <= BUY_AT_MPOT);
+        var potsLow = hpot_count() <= BUY_AT_HPOT || mpot_count() <= BUY_AT_MPOT;
+        // Only enter goo-grind when pots are still low AND we cannot pay for a restock.
+        lowGold = potsLow && !can_afford_restock();
         if (lowGold) {
             if (ROLE == "merchant")
                 game_log("Broke! Merchant waiting for gold", "#FF8800");
             else
-                game_log("Broke! Farming goo for gold", "#FF8800");
+                game_log("Broke! Farming goo for gold (need ~"
+                         + Math.round(goo_gold_goal()) + ")", "#FF8800");
+        } else if (potsLow) {
+            game_log("Pots still low but gold OK - will retry shop later", "#FFAA00");
         }
         return go_back(); // back to the farm spot, then end the trip
     }).then(function () {
@@ -1013,12 +1256,13 @@ function engage(target) {
 }
 
 function maybe_restock() {
+    refresh_low_gold();
     var bagTight = (typeof character.esize == "number" && character.esize <= 2
                     && Date.now() - lastBagTidy > SHOP_FAIL_COOLDOWN);
     var potsLow = hpot_count() <= BUY_AT_HPOT || mpot_count() <= BUY_AT_MPOT;
     if (!(potsLow || bagTight)) return false;
 
-    if (lowGold && character.gold >= GOO_GOLD_GOAL) {
+    if (lowGold && (character.gold >= goo_gold_goal() || can_afford_restock())) {
         lowGold = false;
         note("Enough gold, going shopping", "#00FF00");
     }

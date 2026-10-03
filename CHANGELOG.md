@@ -5,6 +5,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Full-bank handling: detect zero free vault slots (and `bank_store` space rejects), leave the bank map, and sell junk at a town vendor instead of failing `sell()` inside the vault or never tripping the old `BANK_MAX_ITEMS` soft cap.
+- Target selection no longer parks on goo: score farms from `G.monsters` vs character DPS/HP, prefer Progression Guide targets, stop applying the pathing `PATH_MAX_ATT` gate to fights, and only force goo while truly broke (can't afford pot restock).
+
 ### Added
 - Multi-class layout: shared [`common.js`](common.js) library plus thin class entry scripts.
   - Farmers: `mage-farming.js`, `warrior-farming.js`, `ranger-farming.js`, `rogue-farming.js`, `priest-farming.js`, `paladin-farming.js`
